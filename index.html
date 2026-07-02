@@ -3,90 +3,77 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Parsewaver // Endless Drift Drive</title>
+  <title>Parsewaver</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
   <!-- 3D Render Canvas Container -->
   <div id="canvas-container"></div>
 
-  <!-- Cinematic vignette overlay -->
-  <div id="vignette-overlay"></div>
-
-  <!-- Screen Flash Effect (for collisions or near-misses) -->
+  <!-- Screen Flash Effect (crashes) -->
   <div id="screen-flash"></div>
 
-  <!-- HUD Interface -->
+  <!-- HUD -->
   <div id="hud">
-    <!-- Top Bar: Scores -->
-    <div class="hud-top">
-      <div class="score-container glass-panel">
-        <div class="hud-label">SCORE</div>
-        <div id="score-val" class="hud-value">000000</div>
-      </div>
-      <div class="best-score-container glass-panel">
-        <div class="hud-label">BEST</div>
-        <div id="best-val" class="hud-value">000000</div>
-      </div>
+    <!-- Distance, top center -->
+    <div id="hud-distance">
+      <div id="dist-val">0.00<span class="dist-unit">km</span></div>
+      <div id="dist-best">best 0.00 km</div>
     </div>
 
-    <!-- Bottom HUD Info: Speedometer -->
-    <div class="hud-bottom">
-      <div class="speedometer glass-panel">
-        <div class="speed-value-wrapper">
-          <span id="speed-val">0</span>
-          <span class="speed-unit">KM/H</span>
-        </div>
-      <div class="traction-light" id="traction-indicator">CRUISE</div>
+    <!-- Speed, bottom right -->
+    <div id="hud-speed">
+      <div id="drive-mode"></div>
+      <div class="speed-row">
+        <span id="speed-val">0</span>
+        <span class="speed-unit">km/h</span>
       </div>
+      <div id="speed-bar"><div id="speed-bar-fill"></div></div>
     </div>
 
-    <!-- Audio Mute Control Buttons -->
+    <!-- Audio toggles, bottom left -->
     <div class="audio-controls">
-      <button id="btn-mute-music" class="btn-icon active" title="Toggle Music">
-        <span class="icon-label">🎵</span> MUSIC: ON
-      </button>
-      <button id="btn-mute-sfx" class="btn-icon active" title="Toggle SFX">
-        <span class="icon-label">🔊</span> SFX: ON
-      </button>
+      <button id="btn-mute-music" title="Toggle music">♫</button>
+      <button id="btn-mute-sfx" title="Toggle sound effects">fx</button>
     </div>
+
+    <!-- Now playing toast -->
+    <div id="now-playing"></div>
+
+    <!-- Shown when the browser blocks audio until a click -->
+    <div id="audio-hint">🔇 click anywhere to enable sound</div>
+
+    <!-- Credits -->
+    <div id="credits">music: Kevin MacLeod (CC BY) · car: Kenney (CC0) · engine: OGA (CC0)</div>
+    <div id="byline">built by bharz</div>
   </div>
 
-  <!-- Telemetry Diagnostic Panel (Toggle with 'T') -->
-  <div id="telemetry-panel" class="glass-panel">
-    <h3>PHYSICS TELEMETRY</h3>
+  <!-- Telemetry (T) -->
+  <div id="telemetry-panel">
+    <h3>TELEMETRY</h3>
     <div class="telemetry-grid">
-      <div>Position X:</div><div id="tel-pos-x">0.0000</div>
-      <div>Position Z:</div><div id="tel-pos-z">0.0000</div>
-      <div>Heading:</div><div id="tel-heading">0.0000 rad</div>
-      <div>Speed:</div><div id="tel-speed">0.0000</div>
-      <div>Traction (T):</div><div id="tel-traction">1.0000</div>
-      <div>Lateral Vel:</div><div id="tel-lat-vel">0.0000</div>
-      <div>Slip Angle:</div><div id="tel-slip">0.0000°</div>
-      <div class="highlight">Lateral Offset:</div><div id="tel-offset" class="highlight">0.0000</div>
-      <div>FPS:</div><div id="tel-fps">60</div>
+      <div>Position X</div><div id="tel-pos-x">0.0000</div>
+      <div>Position Z</div><div id="tel-pos-z">0.0000</div>
+      <div>Heading</div><div id="tel-heading">0.0000 rad</div>
+      <div>Speed</div><div id="tel-speed">0.0000</div>
+      <div>Traction</div><div id="tel-traction">1.0000</div>
+      <div>Lateral vel</div><div id="tel-lat-vel">0.0000</div>
+      <div>Slip angle</div><div id="tel-slip">0.00°</div>
+      <div>Lateral offset</div><div id="tel-offset">0.0000</div>
+      <div>FPS</div><div id="tel-fps">60</div>
     </div>
-    <div class="telemetry-note">Press [T] to toggle telemetry overlay</div>
   </div>
 
-  <!-- Screens / Overlays -->
-  <!-- Game Over Screen -->
-  <div id="game-over-overlay" class="screen-overlay hidden">
-    <div class="menu-content glass-panel crash-theme">
-      <h1 class="neon-title text-red">CRASHED</h1>
-      <p class="subtitle">YOUR RUN HAS ENDED</p>
-
-      <div class="results-grid">
-        <div class="result-box">
-          <div class="hud-label">FINAL SCORE</div>
-          <div id="final-score" class="result-val">0</div>
-        </div>
-      </div>
-
-      <button id="btn-restart" class="btn-primary">DRIVE AGAIN</button>
+  <!-- Game over -->
+  <div id="game-over-overlay" class="hidden">
+    <div class="wreck-content">
+      <h1>WRECKED</h1>
+      <div class="wreck-distance"><span id="final-score">0.00</span> km</div>
+      <button id="btn-restart">drive again</button>
+      <div class="wreck-hint">or press R</div>
     </div>
   </div>
 

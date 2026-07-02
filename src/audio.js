@@ -1,43 +1,47 @@
-// WebAudio Procedural Synthesizer Engine for Parsewaver
-// Enhanced version with richer synthwave pads, layered engine, and better sequencing
+// Audio engine for Parsewaver.
+// Music: streamed CC-BY tracks (Kevin MacLeod / incompetech.com), looped with crossfades.
+// Engine: one recorded loop (CC0, opengameart.org "Racing car engine sound loops"),
+//   pitch-mapped to speed through a lowpass filter.
+// Other SFX (wind, road, skid, scrape, crash) are procedural WebAudio.
+
+const ENGINE_LOOP_URL = '/sfx/loop_2.wav';
+
+const PLAYLIST = [
+  { url: '/music/neon-laser-horizon.mp3', title: 'Neon Laser Horizon — Kevin MacLeod' },
+  { url: '/music/voxel-revolution.mp3', title: 'Voxel Revolution — Kevin MacLeod' }
+];
+
+const MUSIC_VOLUME = 0.32;
+const SFX_VOLUME = 0.5;
+const CROSSFADE_SEC = 4.0;
 
 export class AudioSynthManager {
   constructor() {
     this.ctx = null;
-    
-    // Master Gains
     this.musicGain = null;
     this.sfxGain = null;
     this.masterCompressor = null;
 
-    // Audio Nodes
-    this.engineOsc1 = null;
-    this.engineOsc2 = null;
+    // Music state
+    this.trackBuffers = new Map();
+    this.trackIndex = Math.floor(Math.random() * PLAYLIST.length);
+    this.currentSource = null;
+    this.currentTrackGain = null;
+    this.nextTrackTimer = null;
+    this.onTrackChange = null; // callback(title)
+
+    // Engine sampler state
+    this.engineSource = null;
     this.engineFilter = null;
-    this.engineGain = null;
-
-    this.windNoise = null;
+    this.engineBus = null;
+    this.rpm = 0;
     this.windGain = null;
-
-    this.roadNoise = null;
-    this.roadFilter = null;
     this.roadGain = null;
-
-    this.screechNoise = null;
-    this.screechFilter = null;
-    this.screechGain = null;
-
-    // Music sequencer state
-    this.musicIntervalId = null;
-    this.musicTempoBPM = 108;
-    this.musicStep = 0;
-    this.musicActive = false;
-
-    // Pad state
-    this.padOscs = [];
-    this.padGain = null;
-    this.padFilter = null;
-    this.currentChordIndex = -1;
+    this.roadFilter = null;
+    this.skidGain = null;
+    this.skidFilter = null;
+    this.scrapeGain = null;
+    this.scrapeFilter = null;
 
     this.isMusicMuted = false;
     this.isSFXMuted = false;
@@ -49,527 +53,380 @@ export class AudioSynthManager {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     this.ctx = new AudioContextClass();
 
-    // Master compressor to prevent clipping
     this.masterCompressor = this.ctx.createDynamicsCompressor();
-    this.masterCompressor.threshold.setValueAtTime(-18, this.ctx.currentTime);
-    this.masterCompressor.knee.setValueAtTime(12, this.ctx.currentTime);
+    this.masterCompressor.threshold.setValueAtTime(-14, this.ctx.currentTime);
+    this.masterCompressor.knee.setValueAtTime(18, this.ctx.currentTime);
     this.masterCompressor.ratio.setValueAtTime(4, this.ctx.currentTime);
     this.masterCompressor.connect(this.ctx.destination);
 
-    // Master Music Channel
     this.musicGain = this.ctx.createGain();
-    this.musicGain.gain.value = 0.18;
+    this.musicGain.gain.value = this.isMusicMuted ? 0 : MUSIC_VOLUME;
     this.musicGain.connect(this.masterCompressor);
 
-    // Master SFX Channel
     this.sfxGain = this.ctx.createGain();
-    this.sfxGain.gain.value = 0.5;
+    this.sfxGain.gain.value = this.isSFXMuted ? 0 : SFX_VOLUME;
     this.sfxGain.connect(this.masterCompressor);
 
-    // Start Synthesizing
-    this.setupEngineSynth();
+    this.setupEngineSampler();
     this.setupWindSynth();
     this.setupRoadSynth();
-    this.setupPadSynth();
-    this.startMusicSequencer();
+    this.setupSkidSynth();
+    this.setupScrapeSynth();
+
+    this.startMusic();
+  }
+
+  resume() {
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume();
+    }
   }
 
   // -------------------------------------------------------------
-  // 1. Engine Sound (Dual Oscillator + Lowpass Filter)
+  // Music playback (real tracks, looped with crossfade)
   // -------------------------------------------------------------
-  setupEngineSynth() {
-    // Primary sawtooth for fundamental
-    this.engineOsc1 = this.ctx.createOscillator();
-    this.engineOsc1.type = 'sawtooth';
-    this.engineOsc1.frequency.value = 42;
+  async loadTrack(index) {
+    const track = PLAYLIST[index];
+    if (this.trackBuffers.has(track.url)) return this.trackBuffers.get(track.url);
+    const res = await fetch(track.url);
+    const raw = await res.arrayBuffer();
+    const buffer = await this.ctx.decodeAudioData(raw);
+    this.trackBuffers.set(track.url, buffer);
+    return buffer;
+  }
 
-    // Secondary square for harmonic richness, detuned slightly
-    this.engineOsc2 = this.ctx.createOscillator();
-    this.engineOsc2.type = 'square';
-    this.engineOsc2.frequency.value = 42;
-    this.engineOsc2.detune.value = -8;
+  async startMusic() {
+    try {
+      await this.playTrack(this.trackIndex);
+      // Preload the next track in the background so the crossfade is seamless.
+      this.loadTrack((this.trackIndex + 1) % PLAYLIST.length).catch(() => {});
+    } catch (err) {
+      console.warn('Music failed to load:', err);
+    }
+  }
 
-    // Mix the two oscillators
-    const oscMix = this.ctx.createGain();
-    oscMix.gain.value = 0.5;
+  async playTrack(index) {
+    if (!this.ctx) return;
+    const buffer = await this.loadTrack(index);
+    if (!this.ctx) return;
 
-    this.engineFilter = this.ctx.createBiquadFilter();
+    const now = this.ctx.currentTime;
+
+    // Fade out whatever is playing
+    if (this.currentSource && this.currentTrackGain) {
+      const oldSource = this.currentSource;
+      this.currentTrackGain.gain.setTargetAtTime(0, now, CROSSFADE_SEC / 3);
+      setTimeout(() => { try { oldSource.stop(); } catch (e) {} }, CROSSFADE_SEC * 1000 + 500);
+    }
+
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+
+    const trackGain = this.ctx.createGain();
+    trackGain.gain.setValueAtTime(0, now);
+    trackGain.gain.linearRampToValueAtTime(1, now + CROSSFADE_SEC * 0.5);
+
+    source.connect(trackGain);
+    trackGain.connect(this.musicGain);
+    source.start(now);
+
+    this.currentSource = source;
+    this.currentTrackGain = trackGain;
+    this.trackIndex = index;
+
+    if (this.onTrackChange) this.onTrackChange(PLAYLIST[index].title);
+
+    // Schedule the next track to crossfade in before this one ends.
+    if (this.nextTrackTimer) clearTimeout(this.nextTrackTimer);
+    const switchInMs = Math.max(10, (buffer.duration - CROSSFADE_SEC) * 1000);
+    this.nextTrackTimer = setTimeout(() => {
+      this.playTrack((this.trackIndex + 1) % PLAYLIST.length);
+    }, switchInMs);
+  }
+
+  // -------------------------------------------------------------
+  // Engine: one recorded loop, pitch mapped to speed, low-passed.
+  // Deliberately simple — crossfading multiple loops sounded awful.
+  // -------------------------------------------------------------
+  async setupEngineSampler() {
+    const ctx = this.ctx;
+
+    this.engineBus = ctx.createGain();
+    this.engineBus.gain.value = 0.0;
+    this.engineBus.connect(this.sfxGain);
+
+    this.engineFilter = ctx.createBiquadFilter();
     this.engineFilter.type = 'lowpass';
-    this.engineFilter.frequency.value = 150;
-    this.engineFilter.Q.value = 2.5;
+    this.engineFilter.frequency.value = 700;
+    this.engineFilter.Q.value = 0.6;
+    this.engineFilter.connect(this.engineBus);
 
-    this.engineGain = this.ctx.createGain();
-    this.engineGain.gain.value = 0.2;
+    try {
+      const raw = await fetch(ENGINE_LOOP_URL).then(r => r.arrayBuffer());
+      if (!this.ctx) return;
+      const buffer = await ctx.decodeAudioData(raw);
 
-    this.engineOsc1.connect(this.engineFilter);
-    this.engineOsc2.connect(oscMix);
-    oscMix.connect(this.engineFilter);
-    this.engineFilter.connect(this.engineGain);
-    this.engineGain.connect(this.sfxGain);
-
-    this.engineOsc1.start(0);
-    this.engineOsc2.start(0);
+      this.engineSource = ctx.createBufferSource();
+      this.engineSource.buffer = buffer;
+      this.engineSource.loop = true;
+      this.engineSource.playbackRate.value = 0.55;
+      this.engineSource.connect(this.engineFilter);
+      this.engineSource.start();
+    } catch (err) {
+      console.warn('Engine sample failed to load:', err);
+    }
   }
 
-  updateEngineSound(speed, isCrashed) {
-    if (!this.ctx || isCrashed) {
-      if (this.engineGain) this.engineGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
+  updateEngineSound(speed, isCrashed, throttle = 0, dt = 0.016) {
+    if (!this.ctx || !this.engineSource) return;
+    const now = this.ctx.currentTime;
+
+    if (isCrashed) {
+      this.engineBus.gain.setTargetAtTime(0, now, 0.15);
       return;
     }
 
-    const absSpeed = Math.abs(speed);
-    const pitch = 42.0 + (absSpeed * 2.0);
-    const filterCutoff = pitch * 2.5 + 80.0;
+    // Rev band 0..1 with inertia: revs rise faster than they fall
+    const norm = Math.min(1, Math.abs(speed) / 70);
+    const target = Math.min(1, Math.pow(norm, 0.85) + throttle * 0.04);
+    const rate = target > this.rpm ? 1.4 : 0.8;
+    this.rpm += (target - this.rpm) * Math.min(1, rate * dt * 4);
 
-    if (this.engineOsc1 && this.engineOsc2 && this.engineFilter && this.engineGain) {
-      this.engineOsc1.frequency.setTargetAtTime(pitch, this.ctx.currentTime, 0.06);
-      this.engineOsc2.frequency.setTargetAtTime(pitch * 0.998, this.ctx.currentTime, 0.06);
-      this.engineFilter.frequency.setTargetAtTime(filterCutoff, this.ctx.currentTime, 0.06);
-      
-      const vol = 0.12 + (absSpeed / 70.0) * 0.2;
-      this.engineGain.gain.setTargetAtTime(vol, this.ctx.currentTime, 0.04);
-    }
+    this.engineSource.playbackRate.setTargetAtTime(0.55 + this.rpm * 0.85, now, 0.08);
+    this.engineFilter.frequency.setTargetAtTime(500 + this.rpm * 1100 + throttle * 300, now, 0.1);
+
+    const vol = 0.13 + this.rpm * 0.12 + throttle * 0.05;
+    this.engineBus.gain.setTargetAtTime(vol, now, 0.08);
   }
 
   // -------------------------------------------------------------
-  // 2. Wind Sound (Lowpass-filtered White Noise)
+  // Wind / road / skid / scrape beds
   // -------------------------------------------------------------
-  setupWindSynth() {
-    const bufferSize = this.ctx.sampleRate * 2.0;
-    const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-    const output = noiseBuffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      output[i] = Math.random() * 2.0 - 1.0;
+  makeNoiseBuffer(seconds, smooth = 0) {
+    const len = Math.floor(this.ctx.sampleRate * seconds);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < len; i++) {
+      const white = Math.random() * 2 - 1;
+      last = last * smooth + white * (1 - smooth);
+      data[i] = last;
     }
+    return buf;
+  }
 
-    this.windNoise = this.ctx.createBufferSource();
-    this.windNoise.buffer = noiseBuffer;
-    this.windNoise.loop = true;
+  setupWindSynth() {
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.makeNoiseBuffer(2.0);
+    src.loop = true;
 
-    const windFilter = this.ctx.createBiquadFilter();
-    windFilter.type = 'lowpass';
-    windFilter.frequency.value = 200.0;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 420;
 
     this.windGain = this.ctx.createGain();
-    this.windGain.gain.value = 0.03;
+    this.windGain.gain.value = 0.0;
 
-    this.windNoise.connect(windFilter);
-    windFilter.connect(this.windGain);
+    src.connect(filter);
+    filter.connect(this.windGain);
     this.windGain.connect(this.sfxGain);
-
-    this.windNoise.start(0);
+    src.start();
   }
 
   updateWindSound(speed) {
     if (!this.ctx || !this.windGain) return;
-    const normSpeed = Math.abs(speed) / 70.0;
-    const vol = normSpeed * normSpeed * 0.12;
-    this.windGain.gain.setTargetAtTime(vol, this.ctx.currentTime, 0.1);
+    const t = Math.min(1, Math.abs(speed) / 70);
+    this.windGain.gain.setTargetAtTime(t * t * 0.1, this.ctx.currentTime, 0.1);
   }
 
-  // -------------------------------------------------------------
-  // 2b. Road Texture (Low rumble + tire bed)
-  // -------------------------------------------------------------
   setupRoadSynth() {
-    const bufferSize = this.ctx.sampleRate * 2.0;
-    const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-    const output = noiseBuffer.getChannelData(0);
-    let last = 0;
-    for (let i = 0; i < bufferSize; i++) {
-      const white = Math.random() * 2.0 - 1.0;
-      last = last * 0.82 + white * 0.18;
-      output[i] = last;
-    }
-
-    this.roadNoise = this.ctx.createBufferSource();
-    this.roadNoise.buffer = noiseBuffer;
-    this.roadNoise.loop = true;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.makeNoiseBuffer(2.0, 0.82);
+    src.loop = true;
 
     this.roadFilter = this.ctx.createBiquadFilter();
     this.roadFilter.type = 'bandpass';
-    this.roadFilter.frequency.value = 95.0;
+    this.roadFilter.frequency.value = 95;
     this.roadFilter.Q.value = 0.9;
 
     this.roadGain = this.ctx.createGain();
     this.roadGain.gain.value = 0.0;
 
-    this.roadNoise.connect(this.roadFilter);
+    src.connect(this.roadFilter);
     this.roadFilter.connect(this.roadGain);
     this.roadGain.connect(this.sfxGain);
-
-    this.roadNoise.start(0);
+    src.start();
   }
 
   updateRoadSound(speed) {
-    if (!this.ctx || !this.roadGain || !this.roadFilter) return;
-    const normSpeed = Math.min(1.0, Math.abs(speed) / 70.0);
-    this.roadGain.gain.setTargetAtTime(0.025 + normSpeed * 0.13, this.ctx.currentTime, 0.08);
-    this.roadFilter.frequency.setTargetAtTime(70 + normSpeed * 170, this.ctx.currentTime, 0.08);
-    this.roadFilter.Q.setTargetAtTime(0.8 + normSpeed * 1.2, this.ctx.currentTime, 0.08);
+    if (!this.ctx || !this.roadGain) return;
+    const now = this.ctx.currentTime;
+    const t = Math.min(1, Math.abs(speed) / 70);
+    this.roadGain.gain.setTargetAtTime(t * 0.1, now, 0.08);
+    this.roadFilter.frequency.setTargetAtTime(70 + t * 170, now, 0.08);
   }
 
-  // -------------------------------------------------------------
-  // 3. Tire Screech (Bandpass-filtered White Noise)
-  // -------------------------------------------------------------
-  setupScreechSynth() {
-    const bufferSize = this.ctx.sampleRate * 2.0;
-    const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-    const output = noiseBuffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      output[i] = Math.random() * 2.0 - 1.0;
-    }
+  setupSkidSynth() {
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.makeNoiseBuffer(2.0);
+    src.loop = true;
 
-    this.screechNoise = this.ctx.createBufferSource();
-    this.screechNoise.buffer = noiseBuffer;
-    this.screechNoise.loop = true;
+    this.skidFilter = this.ctx.createBiquadFilter();
+    this.skidFilter.type = 'bandpass';
+    this.skidFilter.frequency.value = 900;
+    this.skidFilter.Q.value = 3.5;
 
-    this.screechFilter = this.ctx.createBiquadFilter();
-    this.screechFilter.type = 'bandpass';
-    this.screechFilter.frequency.value = 1100.0;
-    this.screechFilter.Q.value = 2.5;
+    this.skidGain = this.ctx.createGain();
+    this.skidGain.gain.value = 0.0;
 
-    this.screechGain = this.ctx.createGain();
-    this.screechGain.gain.value = 0.0;
-
-    this.screechNoise.connect(this.screechFilter);
-    this.screechFilter.connect(this.screechGain);
-    this.screechGain.connect(this.sfxGain);
-
-    this.screechNoise.start(0);
+    src.connect(this.skidFilter);
+    this.skidFilter.connect(this.skidGain);
+    this.skidGain.connect(this.sfxGain);
+    src.start();
   }
 
-  updateScreechSound(traction, speed) {
-    if (!this.ctx || !this.screechGain) return;
-
-    const absSpeed = Math.abs(speed);
-    const tractionLoss = 1.0 - traction;
-
-    if (tractionLoss > 0.1 && absSpeed > 10.0) {
-      const vol = tractionLoss * 0.15;
-      this.screechGain.gain.setTargetAtTime(vol, this.ctx.currentTime, 0.04);
-      const pitch = 850.0 + (absSpeed * 4.0);
-      this.screechFilter.frequency.setTargetAtTime(pitch, this.ctx.currentTime, 0.04);
+  updateSkidSound(lateralVel, speed) {
+    if (!this.ctx || !this.skidGain) return;
+    const now = this.ctx.currentTime;
+    const slip = Math.abs(lateralVel);
+    if (slip > 2.2 && Math.abs(speed) > 8) {
+      const t = Math.min(1, (slip - 2.2) / 8);
+      this.skidGain.gain.setTargetAtTime(t * 0.11, now, 0.04);
+      this.skidFilter.frequency.setTargetAtTime(750 + Math.abs(speed) * 5, now, 0.05);
     } else {
-      this.screechGain.gain.setTargetAtTime(0.0, this.ctx.currentTime, 0.06);
+      this.skidGain.gain.setTargetAtTime(0, now, 0.08);
+    }
+  }
+
+  setupScrapeSynth() {
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.makeNoiseBuffer(1.5);
+    src.loop = true;
+
+    this.scrapeFilter = this.ctx.createBiquadFilter();
+    this.scrapeFilter.type = 'bandpass';
+    this.scrapeFilter.frequency.value = 2600;
+    this.scrapeFilter.Q.value = 1.6;
+
+    this.scrapeGain = this.ctx.createGain();
+    this.scrapeGain.gain.value = 0.0;
+
+    src.connect(this.scrapeFilter);
+    this.scrapeFilter.connect(this.scrapeGain);
+    this.scrapeGain.connect(this.sfxGain);
+    src.start();
+  }
+
+  updateScrapeSound(isScraping, speed) {
+    if (!this.ctx || !this.scrapeGain) return;
+    const now = this.ctx.currentTime;
+    if (isScraping && Math.abs(speed) > 3) {
+      const t = Math.min(1, Math.abs(speed) / 50);
+      this.scrapeGain.gain.setTargetAtTime(0.05 + t * 0.1, now, 0.03);
+      this.scrapeFilter.frequency.setTargetAtTime(1800 + t * 1800, now, 0.05);
+    } else {
+      this.scrapeGain.gain.setTargetAtTime(0, now, 0.05);
     }
   }
 
   // -------------------------------------------------------------
-  // 4. SFX: Crash Crunch
+  // One-shot SFX
   // -------------------------------------------------------------
   playCrashSFX() {
     if (!this.ctx) return;
-
     const now = this.ctx.currentTime;
 
-    // Low thud
+    // Deep impact thud
     const thud = this.ctx.createOscillator();
-    thud.type = 'sawtooth';
-    thud.frequency.setValueAtTime(90.0, now);
-    thud.frequency.exponentialRampToValueAtTime(25.0, now + 0.45);
-
-    const thudFilter = this.ctx.createBiquadFilter();
-    thudFilter.type = 'lowpass';
-    thudFilter.frequency.setValueAtTime(200.0, now);
-    thudFilter.frequency.exponentialRampToValueAtTime(15.0, now + 0.5);
-
+    thud.type = 'sine';
+    thud.frequency.setValueAtTime(110, now);
+    thud.frequency.exponentialRampToValueAtTime(28, now + 0.4);
     const thudGain = this.ctx.createGain();
-    thudGain.gain.setValueAtTime(0.65, now);
+    thudGain.gain.setValueAtTime(0.8, now);
     thudGain.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
-
-    thud.connect(thudFilter);
-    thudFilter.connect(thudGain);
+    thud.connect(thudGain);
     thudGain.connect(this.sfxGain);
     thud.start(now);
     thud.stop(now + 0.6);
 
-    // Crunch noise burst
-    const bufLen = this.ctx.sampleRate * 0.3;
-    const noiseBuf = this.ctx.createBuffer(1, bufLen, this.ctx.sampleRate);
-    const data = noiseBuf.getChannelData(0);
-    for (let i = 0; i < bufLen; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufLen * 0.15));
-    }
-    const noiseSource = this.ctx.createBufferSource();
-    noiseSource.buffer = noiseBuf;
-
-    const noiseGain = this.ctx.createGain();
-    noiseGain.gain.setValueAtTime(0.35, now);
-    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
-
-    const noiseBpf = this.ctx.createBiquadFilter();
-    noiseBpf.type = 'bandpass';
-    noiseBpf.frequency.value = 600;
-    noiseBpf.Q.value = 1.0;
-
-    noiseSource.connect(noiseBpf);
-    noiseBpf.connect(noiseGain);
-    noiseGain.connect(this.sfxGain);
-    noiseSource.start(now);
-  }
-
-  // -------------------------------------------------------------
-  // 5. SFX: Near-Miss Chime (Ascending Pentatonic Arpeggio)
-  // -------------------------------------------------------------
-  playNearMissChime() {
-    if (!this.ctx) return;
-
-    const notes = [523.25, 659.25, 783.99, 1046.5]; // C5, E5, G5, C6
-    const now = this.ctx.currentTime;
-
-    notes.forEach((freq, idx) => {
-      const osc = this.ctx.createOscillator();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(freq, now + idx * 0.07);
-
-      // Slight detune for shimmer
-      const osc2 = this.ctx.createOscillator();
-      osc2.type = 'sine';
-      osc2.frequency.setValueAtTime(freq * 1.003, now + idx * 0.07);
-
+    // Metallic crunch: two noise bursts through resonant filters
+    [{ f: 700, q: 2, d: 0.28, g: 0.4 }, { f: 2400, q: 5, d: 0.45, g: 0.22 }].forEach(p => {
+      const len = Math.floor(this.ctx.sampleRate * p.d);
+      const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (len * 0.2));
+      }
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = p.f;
+      filter.Q.value = p.q;
       const gain = this.ctx.createGain();
-      gain.gain.setValueAtTime(0.0, now + idx * 0.07);
-      gain.gain.linearRampToValueAtTime(0.1, now + idx * 0.07 + 0.015);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.07 + 0.3);
-
-      const gain2 = this.ctx.createGain();
-      gain2.gain.value = 0.06;
-
-      osc.connect(gain);
-      osc2.connect(gain2);
-      gain2.connect(gain);
+      gain.gain.setValueAtTime(p.g, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + p.d);
+      src.connect(filter);
+      filter.connect(gain);
       gain.connect(this.sfxGain);
-
-      osc.start(now + idx * 0.07);
-      osc.stop(now + idx * 0.07 + 0.35);
-      osc2.start(now + idx * 0.07);
-      osc2.stop(now + idx * 0.07 + 0.35);
+      src.start(now);
     });
   }
 
-  // -------------------------------------------------------------
-  // 6. Music: Sustained Pad Synth (Layered Chord Pads)
-  // -------------------------------------------------------------
-  setupPadSynth() {
-    this.padFilter = this.ctx.createBiquadFilter();
-    this.padFilter.type = 'lowpass';
-    this.padFilter.frequency.value = 800;
-    this.padFilter.Q.value = 0.7;
-
-    this.padGain = this.ctx.createGain();
-    this.padGain.gain.value = 0.0;
-
-    this.padFilter.connect(this.padGain);
-    this.padGain.connect(this.musicGain);
-  }
-
-  playChordPad(chordIndex) {
-    if (!this.ctx || chordIndex === this.currentChordIndex) return;
-    this.currentChordIndex = chordIndex;
-
-    // Fade out existing pad oscillators
-    this.padOscs.forEach(osc => {
-      try { osc.stop(this.ctx.currentTime + 0.5); } catch(e) {}
-    });
-    this.padOscs = [];
-
-    // Chord voicings: Am7 - Fmaj7 - Cmaj7 - G7
-    const chords = [
-      [220.0, 261.63, 329.63, 415.30],  // Am7: A3, C4, E4, G#4
-      [174.61, 220.0, 261.63, 329.63],   // Fmaj7: F3, A3, C4, E4
-      [130.81, 164.81, 196.0, 246.94],   // Cmaj7: C3, E3, G3, B3
-      [196.0, 246.94, 293.66, 349.23],   // G7: G3, B3, D4, F4
-    ];
-
+  playRailHitSFX() {
+    if (!this.ctx) return;
     const now = this.ctx.currentTime;
-    const notes = chords[chordIndex % chords.length];
-
-    notes.forEach((freq) => {
-      // Saw oscillator for richness
-      const osc1 = this.ctx.createOscillator();
-      osc1.type = 'sawtooth';
-      osc1.frequency.value = freq;
-
-      // Slightly detuned sine for warmth
-      const osc2 = this.ctx.createOscillator();
-      osc2.type = 'sine';
-      osc2.frequency.value = freq * 1.005;
-
-      const oscGain = this.ctx.createGain();
-      oscGain.gain.setValueAtTime(0.0, now);
-      oscGain.gain.linearRampToValueAtTime(0.04, now + 0.8);
-
-      osc1.connect(oscGain);
-      osc2.connect(oscGain);
-      oscGain.connect(this.padFilter);
-
-      osc1.start(now);
-      osc2.start(now);
-
-      this.padOscs.push(osc1, osc2);
-    });
-
-    // Swell pad volume
-    this.padGain.gain.setTargetAtTime(1.0, now, 0.4);
+    const len = Math.floor(this.ctx.sampleRate * 0.12);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (len * 0.1));
+    }
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 1500;
+    filter.Q.value = 2.5;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.sfxGain);
+    src.start(now);
   }
 
   // -------------------------------------------------------------
-  // 7. Music Sequencer (Bass + Melody + Pad changes)
-  // -------------------------------------------------------------
-  startMusicSequencer() {
-    this.musicActive = true;
-
-    // Bass frequencies: A1, F1, C2, G1
-    const bassProgressions = [55.0, 43.65, 65.41, 49.0];
-
-    // Pentatonic melody in Am (with rests as 0)
-    const melodyPattern = [
-      440.0, 0, 523.25, 0, 587.33, 0, 659.25, 0,
-      783.99, 0, 659.25, 0, 523.25, 587.33, 440.0, 0,
-      523.25, 659.25, 0, 783.99, 880.0, 0, 783.99, 659.25,
-      587.33, 0, 523.25, 0, 440.0, 0, 0, 0,
-    ];
-
-    const stepDuration = 60.0 / this.musicTempoBPM / 2.0;
-
-    const playSequenceStep = () => {
-      if (!this.musicActive || !this.ctx) return;
-
-      const now = this.ctx.currentTime;
-      const chordIndex = Math.floor(this.musicStep / 8) % bassProgressions.length;
-
-      // Change pad chord
-      this.playChordPad(chordIndex);
-
-      // Bass note (every 4 steps)
-      if (this.musicStep % 4 === 0) {
-        const bassFreq = bassProgressions[chordIndex];
-
-        const bassOsc = this.ctx.createOscillator();
-        bassOsc.type = 'sawtooth';
-        bassOsc.frequency.setValueAtTime(bassFreq, now);
-
-        const subOsc = this.ctx.createOscillator();
-        subOsc.type = 'sine';
-        subOsc.frequency.setValueAtTime(bassFreq * 0.5, now);
-
-        const bassFilter = this.ctx.createBiquadFilter();
-        bassFilter.type = 'lowpass';
-        bassFilter.frequency.setValueAtTime(160.0, now);
-
-        const bassGain = this.ctx.createGain();
-        bassGain.gain.setValueAtTime(0.2, now);
-        bassGain.gain.exponentialRampToValueAtTime(0.001, now + stepDuration * 3.5);
-
-        const subGain = this.ctx.createGain();
-        subGain.gain.setValueAtTime(0.12, now);
-        subGain.gain.exponentialRampToValueAtTime(0.001, now + stepDuration * 3.5);
-
-        bassOsc.connect(bassFilter);
-        subOsc.connect(subGain);
-        subGain.connect(bassFilter);
-        bassFilter.connect(bassGain);
-        bassGain.connect(this.musicGain);
-
-        bassOsc.start(now);
-        subOsc.start(now);
-        bassOsc.stop(now + stepDuration * 4.0);
-        subOsc.stop(now + stepDuration * 4.0);
-      }
-
-      // Melody arpeggio (with rests)
-      const melodyFreq = melodyPattern[this.musicStep % melodyPattern.length];
-      if (melodyFreq > 0) {
-        const melOsc = this.ctx.createOscillator();
-        melOsc.type = 'triangle';
-        melOsc.frequency.setValueAtTime(melodyFreq, now);
-
-        // Delay feedback for dreamy echo
-        const melDelay = this.ctx.createDelay();
-        melDelay.delayTime.value = stepDuration * 0.75;
-
-        const melFeedback = this.ctx.createGain();
-        melFeedback.gain.value = 0.2;
-
-        const melGain = this.ctx.createGain();
-        melGain.gain.setValueAtTime(0.07, now);
-        melGain.gain.exponentialRampToValueAtTime(0.001, now + stepDuration * 1.2);
-
-        melOsc.connect(melGain);
-        melGain.connect(this.musicGain);
-        melGain.connect(melDelay);
-        melDelay.connect(melFeedback);
-        melFeedback.connect(melDelay);
-        melDelay.connect(this.musicGain);
-
-        melOsc.start(now);
-        melOsc.stop(now + stepDuration * 2.0);
-      }
-
-      // Hi-hat rhythm (every 2 steps, subtle)
-      if (this.musicStep % 2 === 0) {
-        const hatLen = this.ctx.sampleRate * 0.05;
-        const hatBuf = this.ctx.createBuffer(1, hatLen, this.ctx.sampleRate);
-        const hatData = hatBuf.getChannelData(0);
-        for (let i = 0; i < hatLen; i++) {
-          hatData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (hatLen * 0.15));
-        }
-        const hatSource = this.ctx.createBufferSource();
-        hatSource.buffer = hatBuf;
-
-        const hatFilter = this.ctx.createBiquadFilter();
-        hatFilter.type = 'highpass';
-        hatFilter.frequency.value = 7000;
-
-        const hatGain = this.ctx.createGain();
-        hatGain.gain.setValueAtTime(0.035, now);
-        hatGain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
-
-        hatSource.connect(hatFilter);
-        hatFilter.connect(hatGain);
-        hatGain.connect(this.musicGain);
-        hatSource.start(now);
-      }
-
-      this.musicStep = (this.musicStep + 1) % 32;
-    };
-
-    this.musicIntervalId = setInterval(playSequenceStep, stepDuration * 1000);
-  }
-
-  // -------------------------------------------------------------
-  // Mute & Settings Panel Toggles
+  // Toggles / lifecycle
   // -------------------------------------------------------------
   toggleMusic() {
+    this.resume();
     this.isMusicMuted = !this.isMusicMuted;
-    if (this.musicGain) {
-      this.musicGain.gain.setTargetAtTime(this.isMusicMuted ? 0.0 : 0.18, this.ctx.currentTime, 0.1);
+    if (this.ctx && this.musicGain) {
+      this.musicGain.gain.setTargetAtTime(this.isMusicMuted ? 0 : MUSIC_VOLUME, this.ctx.currentTime, 0.1);
     }
     return !this.isMusicMuted;
   }
 
   toggleSFX() {
+    this.resume();
     this.isSFXMuted = !this.isSFXMuted;
-    if (this.sfxGain) {
-      this.sfxGain.gain.setTargetAtTime(this.isSFXMuted ? 0.0 : 0.5, this.ctx.currentTime, 0.1);
+    if (this.ctx && this.sfxGain) {
+      this.sfxGain.gain.setTargetAtTime(this.isSFXMuted ? 0 : SFX_VOLUME, this.ctx.currentTime, 0.1);
     }
     return !this.isSFXMuted;
   }
 
   clear() {
-    if (this.musicIntervalId) {
-      clearInterval(this.musicIntervalId);
-      this.musicIntervalId = null;
+    if (this.nextTrackTimer) {
+      clearTimeout(this.nextTrackTimer);
+      this.nextTrackTimer = null;
     }
-    this.musicActive = false;
-
-    // Clean up pad oscillators
-    this.padOscs.forEach(osc => {
-      try { osc.stop(); } catch(e) {}
-    });
-    this.padOscs = [];
-    this.currentChordIndex = -1;
-
+    if (this.currentSource) {
+      try { this.currentSource.stop(); } catch (e) {}
+      this.currentSource = null;
+    }
     if (this.ctx) {
       this.ctx.close();
       this.ctx = null;

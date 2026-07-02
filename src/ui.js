@@ -2,24 +2,24 @@
 
 export class UIController {
   constructor() {
-    // HUD element selections
-    this.scoreVal = document.getElementById('score-val');
-    this.bestVal = document.getElementById('best-val');
+    // HUD elements
+    this.distVal = document.getElementById('dist-val');
+    this.distBest = document.getElementById('dist-best');
     this.speedVal = document.getElementById('speed-val');
-    this.tractionIndicator = document.getElementById('traction-indicator');
-    
+    this.speedBarFill = document.getElementById('speed-bar-fill');
+    this.driveMode = document.getElementById('drive-mode');
+
     // Screens
-    this.menuOverlay = document.getElementById('menu-overlay');
     this.gameOverOverlay = document.getElementById('game-over-overlay');
     this.screenFlash = document.getElementById('screen-flash');
-    
+
     // Buttons
-    this.btnStart = document.getElementById('btn-start');
+    this.btnStart = null;
     this.btnRestart = document.getElementById('btn-restart');
     this.btnMuteMusic = document.getElementById('btn-mute-music');
     this.btnMuteSFX = document.getElementById('btn-mute-sfx');
 
-    // Telemetry Elements
+    // Telemetry
     this.telemetryPanel = document.getElementById('telemetry-panel');
     this.telPosX = document.getElementById('tel-pos-x');
     this.telPosZ = document.getElementById('tel-pos-z');
@@ -33,11 +33,10 @@ export class UIController {
 
     this.showTelemetry = false;
 
-    // Load High Score
-    this.bestScore = parseInt(localStorage.getItem('parsewaver_high_score') || '0', 10);
-    this.updateBestScoreDisplay();
+    // Best distance in meters
+    this.bestMeters = parseFloat(localStorage.getItem('parsewaver_best_m') || '0');
+    this.updateBestDisplay();
 
-    // Event listeners
     window.addEventListener('keydown', (e) => {
       if (e.code === 'KeyT') {
         this.toggleTelemetryPanel();
@@ -45,39 +44,50 @@ export class UIController {
     });
   }
 
-  // Update HUD text displays
-  updateHUD(score, speed) {
-    // Update Score (Padded 6 digits)
-    if (this.scoreVal) {
-      this.scoreVal.textContent = Math.floor(score).toString().padStart(6, '0');
-    }
+  setAudioHint(show) {
+    const el = document.getElementById('audio-hint');
+    if (el) el.classList.toggle('visible', !!show);
+  }
 
-    // Update Speedometer (km/h conversion factor = speed * 3.6 for roughly m/s equivalents)
+  showNowPlaying(title) {
+    const el = document.getElementById('now-playing');
+    if (!el) return;
+    el.textContent = `♫ ${title}`;
+    el.classList.add('visible');
+    clearTimeout(this._nowPlayingTimer);
+    this._nowPlayingTimer = setTimeout(() => el.classList.remove('visible'), 5000);
+  }
+
+  updateHUD(distanceMeters, speed, mode = '') {
+    if (this.distVal) {
+      this.distVal.innerHTML = `${(distanceMeters / 1000).toFixed(2)}<span class="dist-unit">km</span>`;
+    }
     if (this.speedVal) {
-      this.speedVal.textContent = Math.abs(Math.floor(speed * 3.6));
+      this.speedVal.textContent = Math.abs(Math.round(speed * 3.6));
     }
-
-    if (this.tractionIndicator) {
-      this.tractionIndicator.textContent = 'CRUISE';
-      this.tractionIndicator.classList.remove('slide');
+    if (this.speedBarFill) {
+      const pct = Math.min(1, Math.abs(speed) / 70) * 100;
+      this.speedBarFill.style.width = `${pct}%`;
     }
-  }
-
-  updateBestScoreDisplay() {
-    if (this.bestVal) {
-      this.bestVal.textContent = this.bestScore.toString().padStart(6, '0');
+    if (this.driveMode) {
+      this.driveMode.textContent = mode;
     }
   }
 
-  saveHighScore(score) {
-    if (score > this.bestScore) {
-      this.bestScore = Math.floor(score);
-      localStorage.setItem('parsewaver_high_score', this.bestScore.toString());
-      this.updateBestScoreDisplay();
+  updateBestDisplay() {
+    if (this.distBest) {
+      this.distBest.textContent = `best ${(this.bestMeters / 1000).toFixed(2)} km`;
     }
   }
 
-  // Diagnostic Telemetry Panel
+  saveHighScore(distanceMeters) {
+    if (distanceMeters > this.bestMeters) {
+      this.bestMeters = distanceMeters;
+      localStorage.setItem('parsewaver_best_m', String(this.bestMeters));
+      this.updateBestDisplay();
+    }
+  }
+
   toggleTelemetryPanel() {
     this.showTelemetry = !this.showTelemetry;
     if (this.telemetryPanel) {
@@ -99,7 +109,6 @@ export class UIController {
     if (this.telFPS) this.telFPS.textContent = Math.round(fps);
   }
 
-  // Screen Flash Visual Effects
   flashCrash() {
     if (this.screenFlash) {
       this.screenFlash.classList.add('flash-crash');
@@ -109,44 +118,12 @@ export class UIController {
     }
   }
 
-  flashNearMiss() {
-    if (this.screenFlash) {
-      this.screenFlash.classList.add('flash-near-miss');
-      setTimeout(() => {
-        this.screenFlash.classList.remove('flash-near-miss');
-      }, 100);
-    }
-  }
+  hideMenu() {}
 
-  // Floating text spawn for event indicators
-  spawnFloatingText(text, isNearMiss, x, y) {
-    const el = document.createElement('div');
-    el.className = `floating-text ${isNearMiss ? 'text-near-miss' : 'text-drift'}`;
-    el.textContent = text;
-    el.style.left = `${x}px`;
-    el.style.top = `${y}px`;
-    document.body.appendChild(el);
-
-    // Self-destruct after animation completes
-    setTimeout(() => {
-      el.remove();
-    }, 1200);
-  }
-
-  // Screen visibility states
-  showMenu() {
-    if (this.menuOverlay) this.menuOverlay.classList.remove('hidden');
-    if (this.gameOverOverlay) this.gameOverOverlay.classList.add('hidden');
-  }
-
-  hideMenu() {
-    if (this.menuOverlay) this.menuOverlay.classList.add('hidden');
-  }
-
-  showGameOver(score) {
+  showGameOver(distanceMeters) {
     if (this.gameOverOverlay) {
       this.gameOverOverlay.classList.remove('hidden');
-      document.getElementById('final-score').textContent = Math.floor(score);
+      document.getElementById('final-score').textContent = (distanceMeters / 1000).toFixed(2);
     }
   }
 

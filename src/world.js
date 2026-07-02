@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { createNoise2D } from 'simplex-noise';
 
-const ROAD_WIDTH = 16.0;
-const SHOULDER_WIDTH = 3.25;
+export const ROAD_WIDTH = 16.0;
+export const SHOULDER_WIDTH = 3.25;
+export const RAIL_OFFSET = ROAD_WIDTH * 0.5 + 2.35; // lateral distance of guardrails from road center
 const ROAD_SAMPLE_STEP = 2.0;
 
 function createSeededRandom(seedText) {
@@ -104,6 +105,30 @@ export function getRoadPosition(z, lateralOffset = 0, lift = 0) {
   );
 }
 
+// Height of the actual drivable surface: the road deck (with its crown) where the
+// road is, terrain elsewhere. The road mesh sits above the raw road elevation, so
+// snapping the car to getTerrainHeight alone makes it sink into the asphalt.
+export function getGroundHeight(x, z) {
+  const roadX = getRoadX(z);
+  const absOffset = Math.abs(x - roadX);
+  const paveEdge = ROAD_WIDTH * 0.5 + SHOULDER_WIDTH;
+
+  if (absOffset <= paveEdge) {
+    const roadY = getRoadElevation(z);
+    const crown = (1 - clamp01(absOffset / (ROAD_WIDTH * 0.5))) * 0.14;
+    const shoulderDrop = Math.max(0, absOffset - ROAD_WIDTH * 0.5) * -0.035;
+    return roadY + 0.08 + crown + shoulderDrop;
+  }
+
+  return getTerrainHeight(x, z);
+}
+
+// Slope of the road along world +Z (rise per unit forward travel).
+export function getRoadGrade(z) {
+  const step = 3.0;
+  return (getRoadElevation(z + step) - getRoadElevation(z - step)) / (step * 2);
+}
+
 export function getTerrainHeight(x, z) {
   const roadX = getRoadX(z);
   const roadY = getRoadElevation(z);
@@ -144,7 +169,7 @@ const TERRAIN_STOPS = [
   { h: 160, color: new THREE.Color(0xe6b9a0) }
 ];
 
-const SHOULDER_COLOR = new THREE.Color(0x302a21);
+const SHOULDER_COLOR = new THREE.Color(0x3d362a);
 
 function getTerrainColor(height, distToRoad) {
   if (distToRoad < ROAD_WIDTH * 0.5 + SHOULDER_WIDTH + 4) {
@@ -286,9 +311,9 @@ class WorldChunk {
     const uvs = [];
     const indices = [];
 
-    const asphalt = new THREE.Color(0x30363a);
-    const shoulder = new THREE.Color(0x4b4235);
-    const crownTint = new THREE.Color(0x42494f);
+    const asphalt = new THREE.Color(0x50575e);
+    const shoulder = new THREE.Color(0x60563f);
+    const crownTint = new THREE.Color(0x5f666d);
 
     for (let r = 0; r <= rows; r++) {
       const t = r / rows;
@@ -307,6 +332,11 @@ class WorldChunk {
         const z = wz + right.z * offset;
         const laneT = clamp01(absOffset / (ROAD_WIDTH * 0.5 + SHOULDER_WIDTH));
         const color = asphalt.clone().lerp(shoulder, smoothstep(0.72, 1.0, laneT)).lerp(crownTint, 0.12 * (1 - laneT));
+
+        // Darkened wear strips where tires actually run in each lane
+        if (Math.abs(absOffset - 3.1) < 0.01 || Math.abs(absOffset - 6.2) < 0.01) {
+          color.multiplyScalar(0.86);
+        }
 
         vertices.push(x, y, z);
         colors.push(color.r, color.g, color.b);
@@ -625,36 +655,35 @@ export class WorldManager {
   constructor(scene) {
     this.scene = scene;
     this.chunkLength = 220.0;
-    this.chunkCount = 7;
     this.chunks = [];
     this.colliders = [];
 
-    this.init();
+    this.update(0);
   }
 
-  init() {
-    this.colliders = [];
-    for (let i = -1; i < this.chunkCount - 1; i++) {
-      const chunk = new WorldChunk(i, this.chunkLength, this.scene);
-      chunk.spawnColliders(this.colliders);
-      this.chunks.push(chunk);
-    }
-  }
-
+  // Keep a window of chunks around the car in BOTH directions, so U-turns,
+  // reversing, and respawning at the start all have world under them.
   update(carZ) {
-    const activeChunkIndex = Math.floor(carZ / this.chunkLength);
-    const targetMinIndex = activeChunkIndex - 1;
+    const active = Math.floor(carZ / this.chunkLength);
+    const minIndex = active - 3;
+    const maxIndex = active + 4;
 
-    while (this.chunks[0] && this.chunks[0].chunkIndex < targetMinIndex) {
-      const oldChunk = this.chunks.shift();
-      const newIndex = this.chunks[this.chunks.length - 1].chunkIndex + 1;
+    this.chunks = this.chunks.filter(chunk => {
+      if (chunk.chunkIndex < minIndex || chunk.chunkIndex > maxIndex) {
+        chunk.destroy();
+        this.colliders = this.colliders.filter(c => c.chunkIndex !== chunk.chunkIndex);
+        return false;
+      }
+      return true;
+    });
 
-      oldChunk.destroy();
-      this.colliders = this.colliders.filter(c => c.chunkIndex !== oldChunk.chunkIndex);
-
-      const newChunk = new WorldChunk(newIndex, this.chunkLength, this.scene);
-      newChunk.spawnColliders(this.colliders);
-      this.chunks.push(newChunk);
+    const have = new Set(this.chunks.map(c => c.chunkIndex));
+    for (let i = minIndex; i <= maxIndex; i++) {
+      if (!have.has(i)) {
+        const chunk = new WorldChunk(i, this.chunkLength, this.scene);
+        chunk.spawnColliders(this.colliders);
+        this.chunks.push(chunk);
+      }
     }
   }
 

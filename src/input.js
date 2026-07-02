@@ -15,6 +15,12 @@ export class InputController {
     window.addEventListener('keyup', (e) => {
       this.keys[e.code] = false;
     });
+
+    // If the window loses focus mid-keypress the keyup never arrives,
+    // leaving a phantom held throttle. Clear everything on blur.
+    window.addEventListener('blur', () => {
+      this.keys = {};
+    });
   }
 
   get inputs() {
