@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sol Ridge Road</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div class="vignette"></div>
+    <main class="hud" aria-label="Game status">
+      <section class="readout">
+        <div class="metric">
+          <span>Velocity</span>
+          <strong id="speed">0</strong>
+        </div>
+        <div class="metric">
+          <span>Signal</span>
+          <strong id="signal">0%</strong>
+        </div>
+      </section>
+      <section class="prompt" id="prompt">
+        <span>Press W</span>
+        <small>A/D steer optional</small>
+      </section>
+    </main>
+  </body>
+</html>
