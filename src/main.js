@@ -31,13 +31,23 @@ let laneVelocity = 0;
 let lastHudUpdate = 0;
 let audioStarted = false;
 let audioContext;
+let masterGain;
 let engineOscillator;
+let engineSubOscillator;
+let engineFilter;
 let engineGain;
+let roadGain;
+let roadFilter;
+let windFilter;
 let windGain;
+let ambientGain;
+let ambientFilter;
+let ambientOscillators = [];
+let nextAudioCueTime = 0;
 
 const clock = new THREE.Clock();
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0x8fc4dd, 240, 1220);
+scene.fog = new THREE.Fog(0xa8cfdc, 260, 1420);
 
 const camera = new THREE.PerspectiveCamera(61, window.innerWidth / window.innerHeight, 0.1, 1300);
 camera.position.set(0, 11, 32);
@@ -51,7 +61,7 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.65));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.82;
+renderer.toneMappingExposure = 0.9;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -85,11 +95,15 @@ const sunDisk = addSunDisc();
 addLighting();
 addTerrain();
 addWater();
+addVistaLake();
 addRoadSystem();
+addBridgeSetPiece();
 addTrees();
 addClouds();
+addCloudBanks();
 addMountains();
 addRoadsideDetails();
+addRoadSigns();
 const vehicle = createVehicle();
 world.add(vehicle.group);
 
@@ -220,11 +234,11 @@ function updateVehicleEffects(time, progress) {
 
 function updateAtmosphere(progress, time) {
   const daylight = 0.5 + Math.sin(time * 0.04) * 0.04;
-  scene.fog.near = 240 - progress * 18;
-  scene.fog.far = 1220 - progress * 90;
-  scene.fog.color.setHSL(0.56, 0.42, daylight + progress * 0.02);
-  bloomPass.strength = 0.06 + progress * 0.03;
-  renderer.toneMappingExposure = 0.82 + progress * 0.03;
+  scene.fog.near = 260 - progress * 18;
+  scene.fog.far = 1420 - progress * 120;
+  scene.fog.color.setHSL(0.55, 0.36, daylight + progress * 0.018);
+  bloomPass.strength = 0.08 + progress * 0.035;
+  renderer.toneMappingExposure = 0.9 + progress * 0.035;
 }
 
 function handleKeyDown(event) {
@@ -329,10 +343,10 @@ function fract(value) {
 }
 
 function addLighting() {
-  const hemi = new THREE.HemisphereLight(0xdff7ff, 0x304d2d, 1.05);
+  const hemi = new THREE.HemisphereLight(0xeaf8ff, 0x38552f, 1.22);
   scene.add(hemi);
 
-  const sun = new THREE.DirectionalLight(0xfff2cf, 2.15);
+  const sun = new THREE.DirectionalLight(0xffedc2, 2.42);
   sun.position.set(-120, 190, 95);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
@@ -344,7 +358,7 @@ function addLighting() {
   sun.shadow.camera.far = 420;
   scene.add(sun);
 
-  const fill = new THREE.DirectionalLight(0x8cc7ff, 0.32);
+  const fill = new THREE.DirectionalLight(0x86c5ff, 0.42);
   fill.position.set(130, 80, -80);
   scene.add(fill);
 }
@@ -354,9 +368,9 @@ function addSky() {
     side: THREE.BackSide,
     depthWrite: false,
     uniforms: {
-      uTop: { value: new THREE.Color(0x3698dd) },
-      uHorizon: { value: new THREE.Color(0xbfe7ee) },
-      uGround: { value: new THREE.Color(0x7fbf89) },
+      uTop: { value: new THREE.Color(0x3f9ddd) },
+      uHorizon: { value: new THREE.Color(0xd6eced) },
+      uGround: { value: new THREE.Color(0x94c692) },
     },
     vertexShader: `
       varying vec3 vWorld;
@@ -476,13 +490,13 @@ function addTerrain() {
 function addRoadSystem() {
   const asphaltTexture = createAsphaltTexture();
   const roadMaterial = new THREE.MeshBasicMaterial({
-    color: 0x34393d,
+    color: 0x4a4e4f,
     map: asphaltTexture,
     fog: false,
     side: THREE.DoubleSide,
   });
   const shoulderMaterial = new THREE.MeshStandardMaterial({
-    color: 0x7f7758,
+    color: 0x93875e,
     map: createGravelTexture(),
     roughness: 0.96,
     side: THREE.DoubleSide,
@@ -642,17 +656,141 @@ function addWater() {
   world.add(river);
 }
 
+function addVistaLake() {
+  const material = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uTime: { value: 0 },
+      uColorA: { value: new THREE.Color(0x247f9d) },
+      uColorB: { value: new THREE.Color(0xbce4d7) },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vWorld;
+
+      void main() {
+        vUv = uv;
+        vec4 world = modelMatrix * vec4(position, 1.0);
+        vWorld = world.xyz;
+        gl_Position = projectionMatrix * viewMatrix * world;
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      uniform vec3 uColorA;
+      uniform vec3 uColorB;
+      varying vec2 vUv;
+      varying vec3 vWorld;
+
+      void main() {
+        float wave = sin(vWorld.x * 0.035 + uTime * 0.55) * sin(vWorld.z * 0.025 - uTime * 0.32);
+        float glint = smoothstep(0.84, 1.0, sin(vWorld.x * 0.12 + vWorld.z * 0.045 + uTime * 1.4) * 0.5 + 0.5);
+        vec3 color = mix(uColorA, uColorB, 0.42 + wave * 0.18);
+        color += vec3(0.8, 0.9, 0.75) * glint * 0.1;
+        gl_FragColor = vec4(color, 0.66);
+      }
+    `,
+  });
+  material.onBeforeRender = () => {
+    material.uniforms.uTime.value = clock.elapsedTime;
+  };
+
+  const lake = new THREE.Mesh(createLakeGeometry(90, 1760, -86, 82, 150), material);
+  const materialTwo = material.clone();
+  materialTwo.onBeforeRender = () => {
+    materialTwo.uniforms.uTime.value = clock.elapsedTime;
+  };
+  const lakeTwo = new THREE.Mesh(createLakeGeometry(920, 2440, 112, 78, 130), materialTwo);
+  world.add(lake, lakeTwo);
+}
+
+function addBridgeSetPiece() {
+  const beamMaterial = new THREE.MeshStandardMaterial({
+    color: 0x596666,
+    roughness: 0.46,
+    metalness: 0.38,
+  });
+  const pierMaterial = new THREE.MeshStandardMaterial({
+    color: 0xa9aaa1,
+    roughness: 0.72,
+  });
+  const deckGeometry = new THREE.BoxGeometry(ROAD_WIDTH + 7.6, 0.34, 7.6);
+  const sideBeamGeometry = new THREE.BoxGeometry(0.32, 0.34, 8.2);
+  const pierGeometry = new THREE.CylinderGeometry(0.28, 0.44, 1, 10);
+  const deckCount = 24;
+  const sideBeamCount = deckCount * 2;
+  const pierCount = 14;
+  const decks = new THREE.InstancedMesh(deckGeometry, beamMaterial, deckCount);
+  const sideBeams = new THREE.InstancedMesh(sideBeamGeometry, beamMaterial, sideBeamCount);
+  const piers = new THREE.InstancedMesh(pierGeometry, pierMaterial, pierCount);
+  let deckIndex = 0;
+  let beamIndex = 0;
+  let pierIndex = 0;
+
+  for (let s = 250; s <= 620; s += 16) {
+    const center = centerAt(s, scratchCenter);
+    const tangent = tangentAt(s, scratchTangent);
+    const side = sideAt(s, scratchSide);
+    const normal = normalAt(s, scratchNormal);
+    const deckPosition = center.clone().addScaledVector(normal, 0.07);
+    scratchMatrix.makeBasis(side, normal, tangent);
+    scratchQuaternion.setFromRotationMatrix(scratchMatrix);
+    scratchScale.set(1, 1, 1);
+    scratchMatrix.compose(deckPosition, scratchQuaternion, scratchScale);
+    decks.setMatrixAt(deckIndex, scratchMatrix);
+    deckIndex++;
+
+    for (const sign of [-1, 1]) {
+      const beamPosition = center
+        .clone()
+        .addScaledVector(side, sign * (ROAD_HALF_WIDTH + 1.85))
+        .addScaledVector(normal, 0.48);
+      scratchMatrix.compose(beamPosition, scratchQuaternion, scratchScale);
+      sideBeams.setMatrixAt(beamIndex, scratchMatrix);
+      beamIndex++;
+    }
+  }
+
+  for (let s = 268; s <= 610; s += 54) {
+    for (const sign of [-1, 1]) {
+      const center = centerAt(s, scratchCenter);
+      const side = sideAt(s, scratchSide);
+      const lateral = sign * (ROAD_HALF_WIDTH + 2.9);
+      const roadY = center.y + 0.12;
+      const groundY = center.y + terrainOffset(s, lateral) - 2.9;
+      const height = THREE.MathUtils.clamp(roadY - groundY, 4.5, 18);
+      const position = center.clone().addScaledVector(side, lateral);
+      position.y = roadY - height * 0.5 - 0.35;
+      scratchQuaternion.identity();
+      scratchScale.set(1, height, 1);
+      scratchMatrix.compose(position, scratchQuaternion, scratchScale);
+      piers.setMatrixAt(pierIndex, scratchMatrix);
+      pierIndex++;
+    }
+  }
+
+  decks.instanceMatrix.needsUpdate = true;
+  sideBeams.instanceMatrix.needsUpdate = true;
+  piers.instanceMatrix.needsUpdate = true;
+  decks.castShadow = true;
+  sideBeams.castShadow = true;
+  piers.castShadow = true;
+  world.add(decks, sideBeams, piers);
+}
+
 function addTrees() {
-  const count = 1300;
+  const count = 900;
   const trunkGeometry = new THREE.CylinderGeometry(0.16, 0.23, 1, 6);
   const pineGeometry = new THREE.ConeGeometry(1, 1, 7);
   pineGeometry.translate(0, 0.5, 0);
   const trunkMaterial = new THREE.MeshStandardMaterial({
-    color: 0x5a3a27,
+    color: 0x6f4c31,
     roughness: 0.86,
   });
   const pineMaterial = new THREE.MeshStandardMaterial({
-    color: 0x2f6f45,
+    color: 0x3e7a45,
     roughness: 0.82,
   });
   const trunks = new THREE.InstancedMesh(trunkGeometry, trunkMaterial, count);
@@ -661,12 +799,12 @@ function addTrees() {
   for (let i = 0; i < count; i++) {
     const s = 22 + hash(i + 10) * (ROUTE_LENGTH - 80);
     const sign = hash(i + 99) > 0.5 ? 1 : -1;
-    const lateral = sign * (18 + Math.pow(hash(i + 33), 0.72) * 245);
+    const lateral = sign * (22 + Math.pow(hash(i + 33), 0.75) * 238);
     const center = centerAt(s, scratchCenter);
     const side = sideAt(s, scratchSide);
     const ground = center.clone().addScaledVector(side, lateral);
     ground.y += terrainOffset(s, lateral);
-    const treeHeight = 5 + Math.pow(hash(i + 61), 1.9) * 14;
+    const treeHeight = 6.5 + Math.pow(hash(i + 61), 1.85) * 14;
     const radius = treeHeight * (0.16 + hash(i + 71) * 0.045);
     const trunkHeight = treeHeight * 0.32;
 
@@ -687,7 +825,7 @@ function addTrees() {
     );
     pines.setMatrixAt(i, scratchMatrix);
 
-    colorScratch.setHSL(0.29 + hash(i + 6) * 0.05, 0.43 + hash(i + 9) * 0.12, 0.24 + hash(i + 14) * 0.12);
+    colorScratch.setHSL(0.29 + hash(i + 6) * 0.05, 0.42 + hash(i + 9) * 0.12, 0.3 + hash(i + 14) * 0.13);
     if (hash(i + 121) > 0.94) {
       colorScratch.setHSL(0.1, 0.55, 0.48);
     }
@@ -700,6 +838,101 @@ function addTrees() {
   trunks.castShadow = true;
   pines.castShadow = true;
   world.add(trunks, pines);
+}
+
+function addGrassDetails() {
+  const grassCount = 1150;
+  const flowerCount = 420;
+  const grassGeometry = new THREE.ConeGeometry(0.11, 1, 4);
+  grassGeometry.translate(0, 0.5, 0);
+  const grassMaterial = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    fog: true,
+  });
+  const flowerGeometry = new THREE.IcosahedronGeometry(0.11, 0);
+  const flowerMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.6,
+    vertexColors: true,
+  });
+  const grass = new THREE.InstancedMesh(grassGeometry, grassMaterial, grassCount);
+  const flowers = new THREE.InstancedMesh(flowerGeometry, flowerMaterial, flowerCount);
+
+  for (let i = 0; i < grassCount; i++) {
+    const s = 12 + hash(i + 400) * (ROUTE_LENGTH - 36);
+    const sign = hash(i + 401) > 0.5 ? 1 : -1;
+    const lateral = sign * (ROAD_HALF_WIDTH + 2.7 + Math.pow(hash(i + 402), 1.8) * 18);
+    const center = centerAt(s, scratchCenter);
+    const side = sideAt(s, scratchSide);
+    const position = center.clone().addScaledVector(side, lateral);
+    position.y += terrainOffset(s, lateral) + 0.05;
+    scratchQuaternion.setFromEuler(new THREE.Euler((hash(i + 403) - 0.5) * 0.22, hash(i + 404) * Math.PI * 2, (hash(i + 405) - 0.5) * 0.22));
+    const bladeHeight = 0.32 + Math.pow(hash(i + 406), 1.7) * 0.95;
+    scratchScale.set(0.95 + hash(i + 407) * 0.85, bladeHeight, 0.95 + hash(i + 408) * 0.85);
+    scratchMatrix.compose(position, scratchQuaternion, scratchScale);
+    grass.setMatrixAt(i, scratchMatrix);
+    colorScratch.setHSL(0.24 + hash(i + 409) * 0.06, 0.48 + hash(i + 410) * 0.14, 0.5 + hash(i + 411) * 0.12);
+    grass.setColorAt(i, colorScratch);
+  }
+
+  for (let i = 0; i < flowerCount; i++) {
+    const s = 20 + hash(i + 600) * (ROUTE_LENGTH - 60);
+    const sign = hash(i + 601) > 0.5 ? 1 : -1;
+    const lateral = sign * (ROAD_HALF_WIDTH + 3.8 + hash(i + 602) * 42);
+    const center = centerAt(s, scratchCenter);
+    const side = sideAt(s, scratchSide);
+    const position = center.clone().addScaledVector(side, lateral);
+    position.y += terrainOffset(s, lateral) + 0.42 + hash(i + 603) * 0.22;
+    scratchQuaternion.identity();
+    const size = 0.85 + hash(i + 604) * 1.1;
+    scratchScale.set(size, size, size);
+    scratchMatrix.compose(position, scratchQuaternion, scratchScale);
+    flowers.setMatrixAt(i, scratchMatrix);
+    colorScratch.setHSL([0.04, 0.13, 0.78, 0.91][i % 4] + hash(i + 605) * 0.025, 0.62, 0.58);
+    flowers.setColorAt(i, colorScratch);
+  }
+
+  grass.instanceMatrix.needsUpdate = true;
+  flowers.instanceMatrix.needsUpdate = true;
+  grass.instanceColor.needsUpdate = true;
+  flowers.instanceColor.needsUpdate = true;
+  world.add(grass, flowers);
+}
+
+function addRockFields() {
+  const count = 95;
+  const geometry = new THREE.DodecahedronGeometry(1, 0);
+  const material = new THREE.MeshStandardMaterial({
+    color: 0xa2a692,
+    roughness: 0.96,
+    flatShading: true,
+    vertexColors: true,
+  });
+  const rocks = new THREE.InstancedMesh(geometry, material, count);
+
+  for (let i = 0; i < count; i++) {
+    const s = 35 + hash(i + 700) * (ROUTE_LENGTH - 90);
+    const sign = hash(i + 701) > 0.5 ? 1 : -1;
+    const lateral = sign * (ROAD_HALF_WIDTH + 9 + Math.pow(hash(i + 702), 0.9) * 100);
+    const center = centerAt(s, scratchCenter);
+    const side = sideAt(s, scratchSide);
+    const position = center.clone().addScaledVector(side, lateral);
+    position.y += terrainOffset(s, lateral) + 0.18;
+    scratchQuaternion.setFromEuler(new THREE.Euler(hash(i + 703) * Math.PI, hash(i + 704) * Math.PI * 2, hash(i + 705) * Math.PI));
+    const radius = 0.22 + Math.pow(hash(i + 706), 1.8) * 1.45;
+    scratchScale.set(radius * (0.9 + hash(i + 707)), radius * (0.42 + hash(i + 708) * 0.68), radius * (0.8 + hash(i + 709)));
+    scratchMatrix.compose(position, scratchQuaternion, scratchScale);
+    rocks.setMatrixAt(i, scratchMatrix);
+    colorScratch.setHSL(0.12 + hash(i + 710) * 0.08, 0.08, 0.46 + hash(i + 711) * 0.22);
+    rocks.setColorAt(i, colorScratch);
+  }
+
+  rocks.instanceMatrix.needsUpdate = true;
+  rocks.instanceColor.needsUpdate = true;
+  rocks.castShadow = true;
+  world.add(rocks);
 }
 
 function addClouds() {
@@ -731,6 +964,33 @@ function addClouds() {
       group.add(puff);
     }
     world.add(group);
+  }
+}
+
+function addCloudBanks() {
+  const texture = createCloudTexture();
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.62,
+    depthWrite: false,
+    fog: true,
+  });
+
+  for (let i = 0; i < 18; i++) {
+    const sprite = new THREE.Sprite(material.clone());
+    const s = hash(i + 820) * ROUTE_LENGTH;
+    const center = centerAt(s, scratchCenter);
+    const side = sideAt(s, scratchSide);
+    const lateral = (hash(i + 821) - 0.5) * 720;
+    sprite.position.copy(center).addScaledVector(side, lateral);
+    sprite.position.y += 115 + hash(i + 822) * 110;
+    sprite.position.z += (hash(i + 823) - 0.5) * 240;
+    const scale = 90 + hash(i + 824) * 130;
+    sprite.scale.set(scale * (1.6 + hash(i + 825)), scale * 0.46, 1);
+    sprite.material.opacity = 0.22 + hash(i + 826) * 0.34;
+    world.add(sprite);
   }
 }
 
@@ -815,6 +1075,71 @@ function addRoadsideDetails() {
   reflectors.instanceMatrix.needsUpdate = true;
   markers.castShadow = true;
   world.add(markers, reflectors);
+}
+
+function addRoadSigns() {
+  const chevronTexture = createChevronTexture();
+  const chevronMaterial = new THREE.MeshBasicMaterial({
+    map: chevronTexture,
+    side: THREE.DoubleSide,
+  });
+  const boardGeometry = new THREE.PlaneGeometry(1.8, 0.86);
+  const postGeometry = new THREE.CylinderGeometry(0.08, 0.12, 1.8, 8);
+  const postMaterial = new THREE.MeshStandardMaterial({
+    color: 0xd8d2bb,
+    roughness: 0.68,
+  });
+
+  for (let i = 0; i < 34; i++) {
+    const s = 150 + i * 118;
+    const before = centerAt(s - 46, scratchCenterA);
+    const now = centerAt(s, scratchCenter);
+    const after = centerAt(s + 46, scratchCenterB);
+    const curve = after.x - now.x * 2 + before.x;
+    const sideSign = curve >= 0 ? 1 : -1;
+    const tangent = tangentAt(s, scratchTangent);
+    const side = sideAt(s, scratchSide);
+    const lateral = sideSign * (ROAD_HALF_WIDTH + 4.3 + (i % 2) * 0.4);
+    const base = now.clone().addScaledVector(side, lateral);
+    base.y += terrainOffset(s, lateral);
+
+    const post = new THREE.Mesh(postGeometry, postMaterial);
+    post.position.copy(base).add(new THREE.Vector3(0, 0.86, 0));
+    post.castShadow = true;
+    world.add(post);
+
+    const board = new THREE.Mesh(boardGeometry, chevronMaterial);
+    const forward = tangent.clone().multiplyScalar(-1).normalize();
+    scratchMatrix.makeBasis(side.clone().multiplyScalar(sideSign), UP, forward);
+    board.quaternion.setFromRotationMatrix(scratchMatrix);
+    board.position.copy(base).add(new THREE.Vector3(0, 1.78, 0)).addScaledVector(side, -sideSign * 0.06);
+    board.castShadow = true;
+    world.add(board);
+  }
+
+  const vistaMaterial = createSignMaterial('VISTA');
+  const slowMaterial = createSignMaterial('SLOW');
+  [420, 1040, 1680].forEach((s, index) => {
+    const sideSign = index % 2 === 0 ? -1 : 1;
+    const center = centerAt(s, scratchCenter);
+    const tangent = tangentAt(s, scratchTangent);
+    const side = sideAt(s, scratchSide);
+    const lateral = sideSign * (ROAD_HALF_WIDTH + 4.9);
+    const base = center.clone().addScaledVector(side, lateral);
+    base.y += terrainOffset(s, lateral);
+
+    const post = new THREE.Mesh(postGeometry, postMaterial);
+    post.position.copy(base).add(new THREE.Vector3(0, 0.88, 0));
+    post.castShadow = true;
+    world.add(post);
+
+    const board = new THREE.Mesh(new THREE.PlaneGeometry(2.3, 0.9), index === 1 ? slowMaterial : vistaMaterial);
+    const forward = tangent.clone().multiplyScalar(-1).normalize();
+    scratchMatrix.makeBasis(side.clone().multiplyScalar(sideSign), UP, forward);
+    board.quaternion.setFromRotationMatrix(scratchMatrix);
+    board.position.copy(base).add(new THREE.Vector3(0, 1.86, 0));
+    world.add(board);
+  });
 }
 
 function createVehicle() {
@@ -1070,7 +1395,7 @@ function createWaterRibbonGeometry(lateralCenter, width, segments) {
     const riverCenter = lateralCenter + wobble;
     const left = center.clone().addScaledVector(side, riverCenter - half);
     const right = center.clone().addScaledVector(side, riverCenter + half);
-    left.y = center.y + terrainOffset(s, riverCenter) * 0.22 - 5.3;
+    left.y = center.y + terrainOffset(s, riverCenter) - 1.15;
     right.y = left.y + Math.sin(s * 0.013) * 0.18;
     positions.push(left.x, left.y, left.z, right.x, right.y, right.z);
     uvs.push(0, s / 80, 1, s / 80);
@@ -1087,6 +1412,126 @@ function createWaterRibbonGeometry(lateralCenter, width, segments) {
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
   return geometry;
+}
+
+function createLakeGeometry(startS, endS, lateralCenter, width, segments) {
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let i = 0; i <= segments; i++) {
+    const amount = i / segments;
+    const s = THREE.MathUtils.lerp(startS, endS, amount);
+    const center = centerAt(s, new THREE.Vector3());
+    const side = sideAt(s, new THREE.Vector3());
+    const lakeWobble = Math.sin(s * 0.006 + lateralCenter * 0.01) * 22 + Math.sin(s * 0.015) * 7;
+    const lakeCenter = lateralCenter + lakeWobble;
+    const lakeWidth = width * (0.72 + Math.sin(amount * Math.PI) * 0.46 + Math.sin(s * 0.009) * 0.08);
+    const leftLateral = lakeCenter - lakeWidth * 0.5;
+    const rightLateral = lakeCenter + lakeWidth * 0.5;
+    const left = center.clone().addScaledVector(side, leftLateral);
+    const right = center.clone().addScaledVector(side, rightLateral);
+    const waterY = center.y + terrainOffset(s, lakeCenter) - 1.25;
+    left.y = waterY + Math.sin(s * 0.011) * 0.12;
+    right.y = waterY + Math.sin(s * 0.013 + 1.7) * 0.12;
+    positions.push(left.x, left.y, left.z, right.x, right.y, right.z);
+    uvs.push(0, amount * 12, 1, amount * 12);
+  }
+
+  for (let i = 0; i < segments; i++) {
+    const a = i * 2;
+    indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function createCloudTexture() {
+  const cloudCanvas = document.createElement('canvas');
+  cloudCanvas.width = 512;
+  cloudCanvas.height = 256;
+  const ctx = cloudCanvas.getContext('2d');
+  ctx.clearRect(0, 0, cloudCanvas.width, cloudCanvas.height);
+
+  for (let i = 0; i < 14; i++) {
+    const x = 80 + hash(i + 900) * 350;
+    const y = 94 + (hash(i + 901) - 0.5) * 62;
+    const rx = 58 + hash(i + 902) * 74;
+    const ry = 26 + hash(i + 903) * 38;
+    const gradient = ctx.createRadialGradient(x, y, 0, x, y, Math.max(rx, ry));
+    gradient.addColorStop(0, `rgba(255, 255, 255, ${0.42 + hash(i + 904) * 0.26})`);
+    gradient.addColorStop(0.62, `rgba(242, 248, 250, ${0.2 + hash(i + 905) * 0.18})`);
+    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(rx / Math.max(rx, ry), ry / Math.max(rx, ry));
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(rx, ry), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  const texture = new THREE.CanvasTexture(cloudCanvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createChevronTexture() {
+  const signCanvas = document.createElement('canvas');
+  signCanvas.width = 256;
+  signCanvas.height = 128;
+  const ctx = signCanvas.getContext('2d');
+  ctx.fillStyle = '#f3c63a';
+  ctx.fillRect(0, 0, 256, 128);
+  ctx.strokeStyle = '#111111';
+  ctx.lineWidth = 18;
+  ctx.lineCap = 'square';
+  for (let i = -1; i < 4; i++) {
+    const x = i * 80 + 28;
+    ctx.beginPath();
+    ctx.moveTo(x, 14);
+    ctx.lineTo(x + 48, 64);
+    ctx.lineTo(x, 114);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+  ctx.lineWidth = 5;
+  ctx.strokeRect(5, 5, 246, 118);
+  const texture = new THREE.CanvasTexture(signCanvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  return texture;
+}
+
+function createSignMaterial(label) {
+  const signCanvas = document.createElement('canvas');
+  signCanvas.width = 256;
+  signCanvas.height = 128;
+  const ctx = signCanvas.getContext('2d');
+  ctx.fillStyle = label === 'SLOW' ? '#f2c33d' : '#2f7aa2';
+  ctx.fillRect(0, 0, 256, 128);
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+  ctx.lineWidth = 9;
+  ctx.strokeRect(8, 8, 240, 112);
+  ctx.fillStyle = label === 'SLOW' ? '#171717' : '#ffffff';
+  ctx.font = '800 46px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, 128, 64);
+  const texture = new THREE.CanvasTexture(signCanvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  return new THREE.MeshBasicMaterial({
+    map: texture,
+    side: THREE.DoubleSide,
+  });
 }
 
 function createAsphaltTexture() {
@@ -1140,44 +1585,188 @@ function createGravelTexture() {
 
 function startAudio() {
   if (audioStarted) {
+    if (audioContext?.state === 'suspended') {
+      audioContext.resume();
+    }
     return;
   }
   audioStarted = true;
   audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioContext.createGain();
+  const compressor = audioContext.createDynamicsCompressor();
   engineOscillator = audioContext.createOscillator();
-  const windOscillator = audioContext.createOscillator();
+  engineSubOscillator = audioContext.createOscillator();
+  engineFilter = audioContext.createBiquadFilter();
   engineGain = audioContext.createGain();
+  roadGain = audioContext.createGain();
+  roadFilter = audioContext.createBiquadFilter();
+  windFilter = audioContext.createBiquadFilter();
   windGain = audioContext.createGain();
-  const filter = audioContext.createBiquadFilter();
+  ambientGain = audioContext.createGain();
+  ambientFilter = audioContext.createBiquadFilter();
+  const roadSource = audioContext.createBufferSource();
+  const windSource = audioContext.createBufferSource();
+  const engineLfo = audioContext.createOscillator();
+  const engineLfoGain = audioContext.createGain();
+  const ambientLfo = audioContext.createOscillator();
+  const ambientLfoGain = audioContext.createGain();
 
   engineOscillator.type = 'sawtooth';
-  engineOscillator.frequency.value = 46;
+  engineSubOscillator.type = 'triangle';
+  engineOscillator.frequency.value = 48;
+  engineSubOscillator.frequency.value = 29;
+  engineFilter.type = 'lowpass';
+  engineFilter.frequency.value = 520;
+  engineFilter.Q.value = 1.2;
   engineGain.gain.value = 0.0001;
 
-  windOscillator.type = 'triangle';
-  windOscillator.frequency.value = 180;
-  windGain.gain.value = 0.0001;
-  filter.type = 'lowpass';
-  filter.frequency.value = 620;
+  roadSource.buffer = createNoiseBuffer(1.5, 0.72);
+  roadSource.loop = true;
+  roadFilter.type = 'bandpass';
+  roadFilter.frequency.value = 420;
+  roadFilter.Q.value = 0.75;
+  roadGain.gain.value = 0.0001;
 
-  engineOscillator.connect(engineGain);
-  engineGain.connect(audioContext.destination);
-  windOscillator.connect(filter);
-  filter.connect(windGain);
-  windGain.connect(audioContext.destination);
+  windSource.buffer = createNoiseBuffer(2.2, 0.42);
+  windSource.loop = true;
+  windFilter.type = 'highpass';
+  windFilter.frequency.value = 700;
+  windFilter.Q.value = 0.4;
+  windGain.gain.value = 0.0001;
+
+  ambientFilter.type = 'lowpass';
+  ambientFilter.frequency.value = 820;
+  ambientFilter.Q.value = 0.45;
+  ambientGain.gain.value = 0.018;
+
+  masterGain.gain.value = 0.42;
+  compressor.threshold.value = -18;
+  compressor.knee.value = 22;
+  compressor.ratio.value = 4;
+  compressor.attack.value = 0.012;
+  compressor.release.value = 0.22;
+
+  engineLfo.type = 'sine';
+  engineLfo.frequency.value = 5.6;
+  engineLfoGain.gain.value = 1.25;
+  engineLfo.connect(engineLfoGain);
+  engineLfoGain.connect(engineOscillator.frequency);
+
+  ambientLfo.type = 'sine';
+  ambientLfo.frequency.value = 0.035;
+  ambientLfoGain.gain.value = 0.006;
+  ambientLfo.connect(ambientLfoGain);
+  ambientLfoGain.connect(ambientGain.gain);
+
+  engineOscillator.connect(engineFilter);
+  engineSubOscillator.connect(engineFilter);
+  engineFilter.connect(engineGain);
+  engineGain.connect(masterGain);
+  roadSource.connect(roadFilter);
+  roadFilter.connect(roadGain);
+  roadGain.connect(masterGain);
+  windSource.connect(windFilter);
+  windFilter.connect(windGain);
+  windGain.connect(masterGain);
+  ambientFilter.connect(ambientGain);
+  ambientGain.connect(masterGain);
+  masterGain.connect(compressor);
+  compressor.connect(audioContext.destination);
+
+  ambientOscillators = [98, 146.83, 220, 293.66].map((frequency, index) => {
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    oscillator.type = index % 2 === 0 ? 'sine' : 'triangle';
+    oscillator.frequency.value = frequency;
+    gain.gain.value = index === 0 ? 0.28 : 0.12;
+    oscillator.connect(gain);
+    gain.connect(ambientFilter);
+    oscillator.start();
+    return oscillator;
+  });
+
   engineOscillator.start();
-  windOscillator.start();
+  engineSubOscillator.start();
+  roadSource.start();
+  windSource.start();
+  engineLfo.start();
+  ambientLfo.start();
+  nextAudioCueTime = audioContext.currentTime + 2.8;
 }
 
 function updateAudio() {
   if (!audioStarted || !audioContext) {
     return;
   }
+  if (audioContext.state === 'suspended') {
+    audioContext.resume();
+  }
   const normalized = THREE.MathUtils.clamp(speed / 45, 0, 1);
   const now = audioContext.currentTime;
-  engineOscillator.frequency.setTargetAtTime(42 + normalized * 72, now, 0.08);
-  engineGain.gain.setTargetAtTime(0.012 + normalized * 0.033, now, 0.12);
-  windGain.gain.setTargetAtTime(0.003 + normalized * 0.014, now, 0.4);
+  const curveEnergy = THREE.MathUtils.clamp(Math.abs(laneVelocity) / 8, 0, 1);
+  const roadPulse = Math.sin(distance * 0.19) * 0.5 + 0.5;
+
+  engineOscillator.frequency.setTargetAtTime(42 + normalized * 62 + curveEnergy * 5, now, 0.07);
+  engineSubOscillator.frequency.setTargetAtTime(25 + normalized * 34, now, 0.1);
+  engineFilter.frequency.setTargetAtTime(260 + normalized * 840 + curveEnergy * 180, now, 0.16);
+  engineGain.gain.setTargetAtTime(0.018 + normalized * 0.032 + curveEnergy * 0.006, now, 0.14);
+  roadFilter.frequency.setTargetAtTime(210 + normalized * 860 + roadPulse * 90, now, 0.2);
+  roadGain.gain.setTargetAtTime(0.005 + normalized * 0.025 + curveEnergy * 0.01, now, 0.18);
+  windFilter.frequency.setTargetAtTime(620 + normalized * 1300, now, 0.35);
+  windGain.gain.setTargetAtTime(0.004 + normalized * 0.018, now, 0.45);
+  ambientGain.gain.setTargetAtTime(0.012 + (1 - normalized) * 0.01, now, 0.8);
+
+  if (now > nextAudioCueTime) {
+    triggerAmbientCue(now, normalized);
+    nextAudioCueTime = now + 5.2 + hash(Math.floor(distance) + 1300) * 7.2;
+  }
+}
+
+function createNoiseBuffer(duration, amplitude) {
+  const sampleRate = audioContext.sampleRate;
+  const length = Math.floor(sampleRate * duration);
+  const buffer = audioContext.createBuffer(1, length, sampleRate);
+  const data = buffer.getChannelData(0);
+  let last = 0;
+  for (let i = 0; i < length; i++) {
+    const white = (Math.random() * 2 - 1) * amplitude;
+    last = last * 0.64 + white * 0.36;
+    data[i] = last;
+  }
+  return buffer;
+}
+
+function triggerAmbientCue(now, speedAmount) {
+  const side = hash(Math.floor(distance * 0.5) + 1700) > 0.5 ? 1 : -1;
+  const panner = audioContext.createStereoPanner();
+  const cueFilter = audioContext.createBiquadFilter();
+  const cueGain = audioContext.createGain();
+  panner.pan.value = side * (0.34 + hash(Math.floor(distance) + 1701) * 0.42);
+  cueFilter.type = 'bandpass';
+  cueFilter.frequency.value = 1250 + hash(Math.floor(distance) + 1702) * 1800;
+  cueFilter.Q.value = 3.8;
+  cueGain.gain.setValueAtTime(0.0001, now);
+  cueGain.gain.exponentialRampToValueAtTime(0.028 + speedAmount * 0.008, now + 0.045);
+  cueGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.1);
+  cueFilter.connect(panner);
+  panner.connect(cueGain);
+  cueGain.connect(masterGain);
+
+  const notes = [660, 880, 987.77];
+  notes.forEach((baseFrequency, index) => {
+    const oscillator = audioContext.createOscillator();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(baseFrequency * (0.97 + hash(Math.floor(distance) + 1710 + index) * 0.08), now + index * 0.08);
+    oscillator.connect(cueFilter);
+    oscillator.start(now + index * 0.08);
+    oscillator.stop(now + 0.72 + index * 0.08);
+  });
+
+  window.setTimeout(() => {
+    cueFilter.disconnect();
+    panner.disconnect();
+    cueGain.disconnect();
+  }, 1400);
 }
 
 function handleResize() {
