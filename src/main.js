@@ -197,17 +197,29 @@ function updateDayNight(dt) {
   // Headlights matter at night
   headlightBoost = 0.55 + (1 - dayF) * 1.8;
 
+  // Eye adaptation: staring into the sun stops the exposure down instead of
+  // flash-banging the whole screen.
+  camera.getWorldDirection(_camDir);
+  const facingSun = Math.max(0, _camDir.dot(sunPosition));
+  const glare = smooth01(0.55, 0.95, facingSun) * smooth01(0.5, 6, e);
+  const targetExposure = 1.15 - glare * 0.62;
+  renderer.toneMappingExposure += (targetExposure - renderer.toneMappingExposure) * Math.min(1, 3.0 * dt);
+  // Bloom also backs off while facing the sun, or it feeds on the glow
+  if (bloomPass) bloomPass.strength = 0.26 * (1 - glare * 0.8);
+
   // God rays: only when the sun is up AND actually on screen
   if (godRaysPass) {
     let intensity = 0;
-    camera.getWorldDirection(_camDir);
-    if (e > 0.5 && _camDir.dot(sunPosition) > 0.1) {
+    if (e > 0.5 && facingSun > 0.1) {
       _sunScreen.copy(camera.position).addScaledVector(sunPosition, 1000).project(camera);
       const sx = _sunScreen.x * 0.5 + 0.5;
       const sy = _sunScreen.y * 0.5 + 0.5;
       const edge = smooth01(-0.35, 0.05, sx) * smooth01(-0.35, 0.05, 1 - sx) *
                    smooth01(-0.35, 0.05, sy) * smooth01(-0.35, 0.05, 1 - sy);
-      intensity = edge * smooth01(0.5, 5, e) * 0.85;
+      // Rays read as shafts when the sun peeks from off-center; staring
+      // dead into it is handled by eye adaptation instead.
+      const centerDist = Math.hypot(sx - 0.5, sy - 0.5);
+      intensity = edge * smooth01(0.5, 5, e) * smooth01(0.14, 0.3, centerDist) * 0.45;
       godRaysPass.uniforms.uSunScreen.value.set(sx, sy);
     }
     godRaysPass.uniforms.uIntensity.value = intensity;
@@ -400,9 +412,8 @@ function init() {
   sunFlareAnchor = new THREE.Object3D();
   scene.add(sunFlareAnchor);
   const flareMain = makeRadialTexture(256, [
-    [0, 'rgba(255,240,220,1)'],
-    [0.25, 'rgba(255,190,120,0.5)'],
-    [0.6, 'rgba(255,150,80,0.12)'],
+    [0, 'rgba(255,240,220,0.4)'],
+    [0.3, 'rgba(255,190,120,0.12)'],
     [1, 'rgba(255,140,70,0)']
   ]);
   const flareGhost = makeRadialTexture(64, [
@@ -412,7 +423,7 @@ function init() {
     [1, 'rgba(255,180,130,0)']
   ]);
   const lensflare = new Lensflare();
-  lensflare.addElement(new LensflareElement(flareMain, 420, 0));
+  lensflare.addElement(new LensflareElement(flareMain, 130, 0));
   lensflare.addElement(new LensflareElement(flareGhost, 60, 0.35));
   lensflare.addElement(new LensflareElement(flareGhost, 110, 0.55));
   lensflare.addElement(new LensflareElement(flareGhost, 45, 0.8));

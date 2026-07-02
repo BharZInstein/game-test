@@ -33,10 +33,11 @@ export const GodRaysShader = {
         pos += delta;
         vec3 s = texture2D(tDiffuse, pos).rgb;
         float luma = dot(s, vec3(0.299, 0.587, 0.114));
-        accum += max(0.0, luma - 0.72) * weight;
+        accum += max(0.0, luma - 0.8) * weight;
         weight *= 0.94;
       }
 
+      accum = min(accum, 2.2);
       vec3 rayColor = vec3(1.0, 0.85, 0.62) * accum * uIntensity * 0.05;
       gl_FragColor = vec4(base.rgb + rayColor, base.a);
     }
