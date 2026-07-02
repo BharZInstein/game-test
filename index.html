@@ -1,29 +1,95 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sol Ridge Road</title>
-    <script type="module" src="/src/main.js"></script>
-  </head>
-  <body>
-    <canvas id="game"></canvas>
-    <div class="vignette"></div>
-    <main class="hud" aria-label="Game status">
-      <section class="readout">
-        <div class="metric">
-          <span>Velocity</span>
-          <strong id="speed">0</strong>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Parsewaver // Endless Drift Drive</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <!-- 3D Render Canvas Container -->
+  <div id="canvas-container"></div>
+
+  <!-- Cinematic vignette overlay -->
+  <div id="vignette-overlay"></div>
+
+  <!-- Screen Flash Effect (for collisions or near-misses) -->
+  <div id="screen-flash"></div>
+
+  <!-- HUD Interface -->
+  <div id="hud">
+    <!-- Top Bar: Scores -->
+    <div class="hud-top">
+      <div class="score-container glass-panel">
+        <div class="hud-label">SCORE</div>
+        <div id="score-val" class="hud-value">000000</div>
+      </div>
+      <div class="best-score-container glass-panel">
+        <div class="hud-label">BEST</div>
+        <div id="best-val" class="hud-value">000000</div>
+      </div>
+    </div>
+
+    <!-- Bottom HUD Info: Speedometer -->
+    <div class="hud-bottom">
+      <div class="speedometer glass-panel">
+        <div class="speed-value-wrapper">
+          <span id="speed-val">0</span>
+          <span class="speed-unit">KM/H</span>
         </div>
-        <div class="metric">
-          <span>Signal</span>
-          <strong id="signal">0%</strong>
+      <div class="traction-light" id="traction-indicator">CRUISE</div>
+      </div>
+    </div>
+
+    <!-- Audio Mute Control Buttons -->
+    <div class="audio-controls">
+      <button id="btn-mute-music" class="btn-icon active" title="Toggle Music">
+        <span class="icon-label">🎵</span> MUSIC: ON
+      </button>
+      <button id="btn-mute-sfx" class="btn-icon active" title="Toggle SFX">
+        <span class="icon-label">🔊</span> SFX: ON
+      </button>
+    </div>
+  </div>
+
+  <!-- Telemetry Diagnostic Panel (Toggle with 'T') -->
+  <div id="telemetry-panel" class="glass-panel">
+    <h3>PHYSICS TELEMETRY</h3>
+    <div class="telemetry-grid">
+      <div>Position X:</div><div id="tel-pos-x">0.0000</div>
+      <div>Position Z:</div><div id="tel-pos-z">0.0000</div>
+      <div>Heading:</div><div id="tel-heading">0.0000 rad</div>
+      <div>Speed:</div><div id="tel-speed">0.0000</div>
+      <div>Traction (T):</div><div id="tel-traction">1.0000</div>
+      <div>Lateral Vel:</div><div id="tel-lat-vel">0.0000</div>
+      <div>Slip Angle:</div><div id="tel-slip">0.0000°</div>
+      <div class="highlight">Lateral Offset:</div><div id="tel-offset" class="highlight">0.0000</div>
+      <div>FPS:</div><div id="tel-fps">60</div>
+    </div>
+    <div class="telemetry-note">Press [T] to toggle telemetry overlay</div>
+  </div>
+
+  <!-- Screens / Overlays -->
+  <!-- Game Over Screen -->
+  <div id="game-over-overlay" class="screen-overlay hidden">
+    <div class="menu-content glass-panel crash-theme">
+      <h1 class="neon-title text-red">CRASHED</h1>
+      <p class="subtitle">YOUR RUN HAS ENDED</p>
+
+      <div class="results-grid">
+        <div class="result-box">
+          <div class="hud-label">FINAL SCORE</div>
+          <div id="final-score" class="result-val">0</div>
         </div>
-      </section>
-      <section class="prompt" id="prompt">
-        <span>Press W</span>
-        <small>A/D steer optional</small>
-      </section>
-    </main>
-  </body>
+      </div>
+
+      <button id="btn-restart" class="btn-primary">DRIVE AGAIN</button>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
 </html>

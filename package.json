@@ -1,17 +1,18 @@
 {
-  "name": "chromatic-rift-road",
-  "version": "1.0.0",
+  "name": "parsewaver",
+  "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
+    "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0"
-  },
-  "dependencies": {
-    "three": "^0.178.0"
+    "preview": "vite preview"
   },
   "devDependencies": {
-    "vite": "^8.1.3"
+    "vite": "^8.1.1"
+  },
+  "dependencies": {
+    "simplex-noise": "^4.0.3",
+    "three": "^0.185.1"
   }
 }
